@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, time
 archivo_asistencia = os.path.join(os.path.dirname(__file__), '../data/asistencia.xlsx')
 archivo_docentes = os.path.join(os.path.dirname(__file__), '../data/docentes.xlsx')
 archivo_horarios = os.path.join(os.path.dirname(__file__), '../data/horarios.xlsx')
+plantilla_excel = os.path.join(os.path.dirname(__file__), '../plantilla/report.xlsx')
 
 def verificar_archivo_asistencia():
     """Verifica si el archivo de asistencia existe, si no lo crea vacío con encabezados."""
@@ -25,7 +26,7 @@ def obtener_docentes():
         try:
             ci = str(row[0]).strip()
             nombre = str(row[1]).strip()
-            pago_por_hora = float(row[3]) if row[3] is not None else 0.0  # Índice 4 para la columna "Pago por Hora"
+            pago_por_hora = float(row[3]) if row[3] is not None else 0.0  # Índice 3 para la columna "Pago por Hora"
             docentes[ci] = (nombre, pago_por_hora)
         except ValueError as e:
             print(f"Error al procesar la fila {row}: {e}")
@@ -39,7 +40,7 @@ def obtener_horario(ci):
         ws_horarios = wb_horarios.active
         for row in ws_horarios.iter_rows(min_row=2, values_only=True):
             if str(row[0]).strip() == ci:
-                materia = row[1]
+                materia = row[2]
                 dia = row[3].lower()  # Asegurarse de que el día esté en minúsculas
                 hora_inicio = row[4]
                 hora_fin = row[5]
@@ -195,7 +196,6 @@ def generar_reporte(ci, mes, year):
     pago_por_hora = docentes[ci][1]
     total_ganado = round(total_horas * pago_por_hora, 2)
     neto_ganado = round(total_ganado - deducciones, 2)
-
     return registros, round(total_horas, 2), total_ganado, round(deducciones, 2), neto_ganado
 
 def exportar_a_excel(ci, mes, year, plantilla_path, output_path):
@@ -207,24 +207,60 @@ def exportar_a_excel(ci, mes, year, plantilla_path, output_path):
     # Obtener los datos del reporte
     registros, total_horas, total_ganado, deducciones, neto_ganado = generar_reporte(ci, mes, year)
 
-    # Buscar la fila de inicio para escribir los datos (puedes ajustarlo según tu plantilla)
-    fila_inicio = 10  # Ajusta este número según la estructura de tu plantilla
+    # Datos del docente
+    nombre_docente = docentes[ci][0]
+    pago_por_hora = docentes[ci][1]
 
-    # Escribir los datos en la hoja de Excel
-    for i, registro in enumerate(registros, start=fila_inicio):
-        ws[f"A{i}"] = registro[0]  # Fecha
-        ws[f"B{i}"] = registro[1].capitalize()  # Día
-        ws[f"C{i}"] = registro[2]  # Materia
-        ws[f"D{i}"] = registro[3]  # Horas trabajadas
-        ws[f"E{i}"] = registro[4]  # Retraso
-        ws[f"F{i}"] = registro[5]  # Deducción
-        ws[f"G{i}"] = registro[6]  # Modalidad (PRESENCIAL)
+    # Obtener el horario del docente para los días de trabajo
+    horario = obtener_horario(ci)
+    dias_trabajo = [dia.capitalize() for dia in horario.keys()]
+    dias_trabajo_str = " - ".join(dias_trabajo)
 
-    # Escribir los totales en la plantilla
-    ws["D50"] = total_horas  # Total de horas trabajadas
-    ws["E50"] = total_ganado  # Total ganado
-    ws["F50"] = deducciones  # Total deducciones
-    ws["G50"] = neto_ganado  # Neto ganado
+    # Escribir datos del docente en la plantilla
+    ws["D6"].value = nombre_docente  # Nombre del docente
+    ws["D8"].value = pago_por_hora  # Pago por hora
+    ws["D10"].value = dias_trabajo_str  # Días que viene a trabajar el docente
+    ws["J6"].value = ci  # CI del docente
+
+    # Calcular el período de declaración
+    fecha_inicio = f"01/{mes:02d}/{year}"
+    fecha_fin = f"{(datetime(year, mes + 1, 1) - timedelta(days=1)).strftime('%d/%m/%Y')}"
+    periodo_declaracion = f"{fecha_inicio} al {fecha_fin}"
+    ws["J8"].value = periodo_declaracion  # Período de declaración
+
+    # Obtener el estilo de las celdas de la fila 16 en las columnas B a H
+    estilos_celdas_plantilla = [ws[f"{col}16"]._style for col in "BCDEFGH"]
+
+    # Escribir los datos en las filas ya existentes de la hoja de Excel
+    fila_inicio = 16  # Fila inicial para los datos de la tabla
+    fila_fin = 31  # Fila final para los datos de la tabla
+
+    for i, registro in enumerate(registros):
+        fila = fila_inicio + i
+        if fila > fila_fin:
+            ws.insert_rows(fila)  # Insertar nueva fila si excede el límite
+
+        # Aplicar estilo y valor a las columnas B a H
+        for j, value in enumerate(registro):
+            celda = ws.cell(row=fila, column=2 + j, value=value)
+            celda._style = estilos_celdas_plantilla[j]
+
+    # Llenar la tabla de deducciones desde la celda J17 y K17
+    fila_deducciones_inicio = 17
+    col_fecha_deduccion = 10  # Columna J
+    col_monto_deduccion = 11  # Columna K
+    fila_deducciones_actual = fila_deducciones_inicio
+
+    for registro in registros:
+        fecha = registro[0]
+        monto_deduccion = registro[5]
+        if monto_deduccion > 0:  # Solo incluir deducciones mayores a 0
+            ws.cell(row=fila_deducciones_actual, column=col_fecha_deduccion, value=fecha)
+            ws.cell(row=fila_deducciones_actual, column=col_monto_deduccion, value=monto_deduccion)
+            fila_deducciones_actual += 1
+
+    # Crear el directorio si no existe
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # Guardar el archivo con los datos actualizados
     wb.save(output_path)
@@ -282,6 +318,20 @@ def abrir_reporte(root_menu):
                 tree.insert("", "end", values=registro)
 
         lbl_totales.config(text=f"Total Horas: {total_horas}\nTotal Ganado: Bs {total_ganado}\nDeducciones: Bs {deducciones}\nNeto Ganado: Bs {neto_ganado}")
+
+        # Mostrar botones de exportación
+        btn_exportar_excel.pack(side=tk.LEFT, padx=10)
+
+    def exportar_excel():
+        """Exporta el reporte a un archivo Excel."""
+        docente_nombre = combo_docente.get().strip()
+        mes = combo_mes.get().strip()
+        year = int(combo_year.get().strip())
+        ci = [ci for ci, info in docentes.items() if info[0] == docente_nombre][0]
+        mes_numero = meses_espanol[mes]
+        output_path = os.path.join(os.path.dirname(__file__), f'../reportes/reporte_{ci}_{mes}_{year}.xlsx')
+        exportar_a_excel(ci, mes_numero, year, plantilla_excel, output_path)
+        messagebox.showinfo("Exportar a Excel", f"Reporte guardado en: {output_path}")
 
     root_menu.withdraw()
     root = tk.Toplevel()
@@ -343,6 +393,10 @@ def abrir_reporte(root_menu):
 
     lbl_totales = tk.Label(frame_totales, text="", bg='#e0e0e0', font=('Arial', 12, 'bold'), justify=tk.LEFT)
     lbl_totales.pack(pady=10, anchor="w")
+
+    # Botón para exportar a Excel
+    btn_exportar_excel = tk.Button(frame_filtros, text="Exportar a Excel", command=exportar_excel, bg='#212121', fg='white')
+    btn_exportar_excel.pack_forget()  # Ocultar inicialmente
 
     # Botón para volver al menú
     tk.Button(root, text="Volver al Menú", command=lambda: volver_al_menu(root, root_menu), 
